@@ -22,7 +22,6 @@ use naming::naming::main::Naming;
 use naming::pricing::Pricing;
 use super::common::deploy;
 
-
 #[test]
 #[available_gas(2000000000)]
 #[should_panic(expected: ('u256_sub Overflow', 'ENTRYPOINT_FAILED', 'ENTRYPOINT_FAILED'))]
@@ -241,5 +240,62 @@ fn test_non_admin_cannot_claim_balance() {
 
     // A non-admin tries to claim the balance of the contract
     naming.claim_balance(eth.contract_address);
+}
+
+#[test]
+#[available_gas(2000000000)]
+#[should_panic(expected: ('a parent domain was reset', 'ENTRYPOINT_FAILED'))]
+fn test_use_reset_subdomains() {
+    // setup
+    let (eth, pricing, identity, naming) = deploy();
+    let alpha = contract_address_const::<0x123>();
+    let bravo = contract_address_const::<0x456>();
+
+    // we mint the ids
+
+    set_contract_address(alpha);
+    identity.mint(1);
+    set_contract_address(bravo);
+    identity.mint(2);
+
+    set_contract_address(alpha);
+    let aller: felt252 = 35683102;
+
+    // we check how much a domain costs
+    let (_, price) = pricing.compute_buy_price(5, 365);
+
+    // we allow the naming to take our money
+    eth.approve(naming.contract_address, price);
+
+    // we buy with no resolver, no sponsor, no discount and empty metadata
+    naming
+        .buy(1, aller, 365, ContractAddressZeroable::zero(), ContractAddressZeroable::zero(), 0, 0);
+
+    let root_domain = array![aller].span();
+    let subdomain = array![aller, aller].span();
+
+    // we transfer aller.aller.stark to id2
+    naming.transfer_domain(subdomain, 2);
+
+    // and make sure the owner has been updated
+    assert(naming.domain_to_id(subdomain) == 2, 'owner not updated correctly');
+
+    // now bravo should be able to create a subsubdomain (charlie.aller.aller.stark):
+    set_contract_address(bravo);
+    let subsubdomain = array!['charlie', aller, aller].span();
+    naming.transfer_domain(subsubdomain, 3);
+
+    // alpha resets subdomains of aller.stark
+    set_contract_address(alpha);
+    naming.reset_subdomains(root_domain);
+
+    // ensure aller.stark still resolves
+    assert(naming.domain_to_id(root_domain) == 1, 'owner not updated correctly');
+    // ensure the subdomain was reset
+    assert(naming.domain_to_id(subdomain) == 0, 'owner not updated correctly');
+
+    set_contract_address(bravo);
+    let subsubdomain2 = array!['delta', aller, aller].span();
+    naming.transfer_domain(subsubdomain2, 4);
 }
 

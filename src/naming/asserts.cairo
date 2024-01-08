@@ -1,3 +1,5 @@
+use core::traits::TryInto;
+use core::array::SpanTrait;
 use naming::{
     interface::{
         naming::{INaming, INamingDispatcher, INamingDispatcherTrait},
@@ -27,7 +29,7 @@ use openzeppelin::token::erc20::interface::{
 };
 use integer::{u256_safe_divmod, u256_as_non_zero};
 use naming::naming::utils::UtilsTrait;
-
+use debug::PrintTrait;
 
 #[generate_trait]
 impl AssertionsImpl of AssertionsTrait {
@@ -61,36 +63,38 @@ impl AssertionsImpl of AssertionsTrait {
         assert(get_block_timestamp() <= root_domain_data.expiry, 'this domain has expired');
     }
 
+    // ensures you own a domain or one of its parents
     fn assert_is_owner(
         self: @Naming::ContractState, domain: Span<felt252>, account: ContractAddress
-    ) -> u32 {
-        let hashed_domain = self.hash_domain(domain);
-        let data = self._domain_data.read(hashed_domain);
+    ) {
+        let mut i: felt252 = 1;
+        let stop = (domain.len() + 1).into();
+        let mut parent_key = 0;
+        loop {
+            assert(i != stop, 'you don\'t own this domain');
+            let i_gas_saver = i.try_into().unwrap();
+            let active_domain = domain.slice(domain.len() - i_gas_saver, i_gas_saver);
+            let hashed_domain = self.hash_domain(active_domain);
+            let data = self._domain_data.read(hashed_domain);
 
-        // because erc721 crashes on zero
-        let owner = if data.owner == 0 {
-            ContractAddressZeroable::zero()
-        } else {
-            IIdentityDispatcher { contract_address: self.starknetid_contract.read() }
-                .owner_from_id(data.owner)
+            assert(data.parent_key == parent_key, 'a parent domain was reset');
+
+            // because erc721 crashes on zero
+            let owner = if data.owner == 0 {
+                ContractAddressZeroable::zero()
+            } else {
+                IIdentityDispatcher { contract_address: self.starknetid_contract.read() }
+                    .owner_from_id(data.owner)
+            };
+
+            // if caller owns the identity, he controls the domain and its children
+            if owner == account {
+                break;
+            };
+
+            parent_key = data.key;
+            i += 1;
         };
-
-        // if caller owns the starknet id, he owns the domain, we return the key
-        if owner == account {
-            return data.key;
-        };
-
-        // otherwise, if it is a root domain, he doesn't own it
-        assert(domain.len() != 1 && domain.len() != 0, 'you don\'t own this domain');
-
-        // if he doesn't own the starknet id, and doesn't own the domain, he might own the parent domain
-        let parent_key = self.assert_is_owner(domain.slice(1, domain.len() - 1), account);
-        // we ensure that the key is the same as the parent key
-        // this is to allow to revoke all subdomains in o(1) writes, by juste updating the key of the parent
-        if (data.parent_key != 0) {
-            assert(parent_key == data.parent_key, 'you no longer own this domain');
-        };
-        data.key
     }
 
     // this ensures a non expired domain is not already written on this identity
